@@ -1,119 +1,128 @@
 ﻿using System;
-using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
 
-[System.Serializable]
-public class ObjectPool {
-    private static uint lastInstanceId = 0;
+namespace ObjectPool
+{
+	[System.Serializable]
+	public abstract class ObjectPool<T>
+		where T : class
+	{
+		public int minCapacity;
+		public int maxCapacity;
+		public T template;
+		public bool returnNullOnUnderflow;
+		public string label = "<Unlabeled object pool>";
 
-    public int minCapacity;
-    public int maxCapacity;
-    public GameObject prefab;
-    public bool returnNullOnUnderflow;
-    public Func<GameObject, GameObject> initializer = (prefab) => GameObject.Instantiate (prefab);
-    public string label = "<Unlabeled object pool #" + ++ObjectPool.lastInstanceId + ">";
+		private T[] pool;
+		private bool ready = false;
+		private int queueStart = 0;
+		private int queueEnd = 0;
+		private int objectsInPool = 0;
 
-    private GameObject[] pool;
-    private bool ready = false;
-    private int queueStart = 0;
-    private int queueEnd = 0;
-    private int objectsInPool = 0;
+		public void Init ()
+		{
+			if (ready) {
+				return;
+			}
+			ready = true;
 
-    public static bool IsPooled(GameObject gameObject) {
-        return gameObject.GetComponent<PooledObjectController> ();
-    }
+			if (template == null) {
+				throw new ArgumentNullException ("template", "The template object cannot be null");
+			}
+			if (minCapacity <= 0) {
+				throw new ArgumentOutOfRangeException (
+					"minCapacity",
+					"The minimum capacity must be a positive integer"
+				);
+			}
+			if (maxCapacity < minCapacity) {
+				throw new ArgumentOutOfRangeException (
+					"maxCapacity",
+					string.Format (
+						"The maximum capacity ({0}) cannot be lower than the minimum capacity ({1})",
+						maxCapacity,
+						minCapacity
+					)
+				);
+			}
 
-    public static void ReturnObjectToPool(GameObject usedObject) {
-        usedObject.GetComponent<PooledObjectController> ().ReturnToPool ();
-    }
+			pool = new T[minCapacity];
+			for (int i = 0; i < minCapacity; i++) {
+				AddObjectInstance ();
+			}
+		}
 
-    public GameObject GetObject() {
-        if (!ready) {
-            Init ();
-        }
+		public T GetObject ()
+		{
+			if (!ready) {
+				throw new InvalidOperationException ("Call the Init() method first");
+			}
 
-        if (objectsInPool == 0) {
-            if (pool.LongLength < maxCapacity) {
-                Grow ();
-            } else if (returnNullOnUnderflow) {
-                return null;
-            } else {
-                throw new OutOfMemoryException(
-                    "The maximum capacity (" + maxCapacity + ") of the object pool '" + label + "' has been exceeded"
-                );
-            }
-        }
+			if (objectsInPool == 0) {
+				if (pool.Length < maxCapacity) {
+					Grow ();
+				} else if (returnNullOnUnderflow) {
+					Debug.Log (string.Format (
+						"The {0} object pool has underflown and is returning nulls. Make sure the capacity is sufficient and check for memleaks.",
+						label
+					));
+					return null;
+				} else {
+					throw new OutOfMemoryException (string.Format (
+						"The maximum capacity ({0}) of the object pool '{1}' has been exceeded",
+						maxCapacity,
+						label
+					));
+				}
+			}
 
-        GameObject objectInstance = pool[queueStart];
-        objectInstance.SetActive (true);
-        queueStart = (queueStart + 1) % pool.Length;
-        objectsInPool--;
-        return objectInstance;
-    }
+			T objectInstance = pool [queueStart];
 
-    public void ReturnObject(GameObject usedObject) {
-        if (!ready) {
-            Init ();
-        }
+			ActivateObject (objectInstance);
+			queueStart = (queueStart + 1) % pool.Length;
+			objectsInPool--;
+			return objectInstance;
+		}
 
-        usedObject.SetActive (false);
-        pool [queueEnd] = usedObject;
-        queueEnd = (queueEnd + 1) % pool.Length;
-        objectsInPool++;
-    }
+		public void ReturnObject (T usedObject)
+		{
+			if (!ready) {
+				throw new InvalidOperationException ("Call the Init() method first");
+			}
 
-    public void Init() {
-        if (ready) {
-            return;
-        }
-        ready = true;
+			DeactivateObject (usedObject);
+			pool [queueEnd] = usedObject;
+			queueEnd = (queueEnd + 1) % pool.Length;
+			objectsInPool++;
+		}
 
-        if (prefab == null) {
-            throw new ArgumentNullException ("The prefab game object cannot be null");
-        }
-        if (initializer == null) {
-            throw new ArgumentNullException ("The game object instance initializer function cannot be null");
-        }
-        if (minCapacity <= 0) {
-            throw new ArgumentOutOfRangeException ("The minimum capacity must be a positive integer");
-        }
-        if (maxCapacity < minCapacity) {
-            throw new ArgumentOutOfRangeException (
-                "The maximum capacity (" + maxCapacity + ") cannot be lower than the minimum capacity (" + minCapacity + ")"
-            );
-        }
+		protected abstract T CreateObjectInstance ();
 
-        pool = new GameObject[minCapacity];
-        for (int i = 0; i < minCapacity; i++) {
-            AddObjectInstance ();
-        }
-    }
+		protected abstract void ActivateObject (T pooledObject);
 
-    private void Grow() {
-        Debug.LogWarning (
-            "The currenct capacity (" + pool.LongLength + ") of the pool '" + label +
-            "' has been exceeded, increasing capacity"
-        );
+		protected abstract void DeactivateObject (T pooledObject);
 
-        int newCapacity;
-        if (pool.Length > maxCapacity / 2) {
-            newCapacity = maxCapacity;
-        } else {
-            newCapacity = pool.Length * 2;
-        }
-        int capacityIncrease = newCapacity - pool.Length;
-        pool = new GameObject[newCapacity];
+		void Grow ()
+		{
+			Debug.LogWarning (string.Format (
+				"The currenct capacity ({0}) of the pool '{1}' has been exceeded, increasing capacity",
+				pool.Length,
+				label
+			));
 
-        for (int i = 0; i < capacityIncrease; i++) {
-            AddObjectInstance ();
-        }
-    }
+			int newCapacity = pool.Length > maxCapacity / 2 ? maxCapacity : pool.Length * 2;
+			int capacityIncrease = newCapacity - pool.Length;
+			pool = new T[newCapacity];
 
-    private void AddObjectInstance() {
-        GameObject objectInstance = initializer (prefab);
-        PooledObjectController controller = objectInstance.GetComponent<PooledObjectController> ();
-        controller.parentPool = this;
-        ReturnObject (objectInstance);
-    }
+			for (int i = 0; i < capacityIncrease; i++) {
+				AddObjectInstance ();
+			}
+		}
+
+		void AddObjectInstance ()
+		{
+			T objectInstance = CreateObjectInstance ();
+			ReturnObject (objectInstance);
+		}
+	}
 }
